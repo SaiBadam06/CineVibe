@@ -184,7 +184,12 @@ async def recommend_movies(request: MoodRequest):
                 
                 # Case 2: Specific Foreign Language Requested (e.g., Telugu)
                 elif req_lang in movie_langs:
-                    score += 10
+                    # NATIVE BOOST: If it's the original language, give massive priority
+                    movie_orig = (movie.get('original_language') or '').lower()
+                    if req_lang == movie_orig:
+                        score += 50
+                    else:
+                        score += 5
                 
                 # Case 3: Foreign requested, but movie doesn't support it
                 elif req_lang in non_english_triggers:
@@ -210,7 +215,7 @@ async def recommend_movies(request: MoodRequest):
         if not top_movies and not generated_new:
              try:
                 lang_instr = f"in {target_language} language" if target_language != "Any" else ""
-                gen_prompt = f"Return a JSON object with a 'movies' list containing 5 real {target_genre} movies {lang_instr} matching vibes: {', '.join(keywords)}. Each movie must have keys: title, description, genre, languages (list), mood_tags (list), poster_url, ott."
+                gen_prompt = f"Return a JSON object with a 'movies' list containing 5 real {target_genre} movies {lang_instr} matching vibes: {', '.join(keywords)}. Each movie must have keys: title, description, genre, original_language (native), languages (list), mood_tags (list), poster_url, ott."
                 gen_completion = groq_client.chat.completions.create(
                      messages=[{"role": "user", "content": gen_prompt}],
                      model="llama-3.1-8b-instant",

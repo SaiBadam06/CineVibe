@@ -2,16 +2,23 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import { motion } from 'framer-motion';
 import { Search, Sparkles } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import MovieCard from '../components/MovieCard';
+import { supabase } from '../supabase';
 
 const VibePage = () => {
+    const navigate = useNavigate();
     const [mood, setMood] = useState('');
     const [movies, setMovies] = useState([]);
     const [loading, setLoading] = useState(false);
     const [matchType, setMatchType] = useState('');
     const [newlyGenerated, setNewlyGenerated] = useState(false);
     const [targetGenre, setTargetGenre] = useState('');
+
+    const handleLogout = async () => {
+        await supabase.auth.signOut();
+        navigate('/login');
+    };
 
     const handleSearch = async () => {
         if (!mood.trim()) return;
@@ -50,6 +57,12 @@ const VibePage = () => {
                         <Link to="/" className="text-slate-400 hover:text-white transition-colors font-medium">
                             About
                         </Link>
+                        <button
+                            onClick={handleLogout}
+                            className="text-slate-400 hover:text-red-400 transition-colors font-medium ml-2"
+                        >
+                            Logout
+                        </button>
                         <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-purple-500 to-pink-500" />
                     </div>
                 </header>

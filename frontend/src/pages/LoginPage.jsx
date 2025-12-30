@@ -33,7 +33,15 @@ const LoginPage = () => {
                 });
                 if (error) throw error;
 
-                // Check if session exists immediately (confirmation might be disabled)
+                // Create profile in profiles table
+                if (data.user) {
+                    await supabase.table('profiles').upsert({
+                        id: data.user.id,
+                        email: data.user.email,
+                        updated_at: new Date().toISOString()
+                    });
+                }
+
                 if (data.session) {
                     navigate('/');
                 } else {
