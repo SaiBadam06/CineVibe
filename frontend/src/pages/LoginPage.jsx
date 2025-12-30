@@ -68,7 +68,8 @@ const LoginPage = () => {
                 navigate('/');
             }
         } catch (err) {
-            setMessage({ type: 'error', text: err.message });
+            console.error("Auth error:", err);
+            setMessage({ type: 'error', text: err.message || "Authentication failed. Check your credentials." });
         } finally {
             setLoading(false);
         }

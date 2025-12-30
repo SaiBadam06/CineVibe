@@ -12,8 +12,23 @@ const VibePage = () => {
     const [movies, setMovies] = useState([]);
     const [loading, setLoading] = useState(false);
     const [matchType, setMatchType] = useState('');
-    const [newlyGenerated, setNewlyGenerated] = useState(false);
     const [targetGenre, setTargetGenre] = useState('');
+    const [profile, setProfile] = useState(null);
+
+    React.useEffect(() => {
+        const fetchProfile = async () => {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session) {
+                const { data } = await supabase
+                    .from('profiles')
+                    .select('*')
+                    .eq('id', session.user.id)
+                    .single();
+                if (data) setProfile(data);
+            }
+        };
+        fetchProfile();
+    }, []);
 
     const handleLogout = async () => {
         await supabase.auth.signOut();
@@ -28,7 +43,19 @@ const VibePage = () => {
         setNewlyGenerated(false);
         try {
             const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
-            const response = await axios.post(`${API_URL}/recommend`, { mood });
+
+            // Get current session for JWT
+            const { data: { session } } = await supabase.auth.getSession();
+            const token = session?.access_token;
+
+            const response = await axios.post(`${API_URL}/recommend`,
+                { mood },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                }
+            );
             if (response.data.movies) {
                 setMovies(response.data.movies);
                 setMatchType(response.data.match_type);

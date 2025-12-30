@@ -7,10 +7,22 @@ import { supabase } from '../supabase';
 const AboutPage = () => {
     const navigate = useNavigate();
     const [session, setSession] = useState(null);
+    const [profile, setProfile] = useState(null);
 
     useEffect(() => {
+        const getProfile = async (session) => {
+            if (!session) return;
+            const { data, error } = await supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', session.user.id)
+                .single();
+            if (data) setProfile(data);
+        };
+
         supabase.auth.getSession().then(({ data: { session } }) => {
             setSession(session);
+            getProfile(session);
         });
 
         const {
@@ -55,7 +67,9 @@ const AboutPage = () => {
                     </div>
                     {session ? (
                         <div className="flex items-center gap-4">
-                            <span className="text-sm text-slate-400 hidden md:block">{session.user.email}</span>
+                            <span className="text-sm text-slate-400 hidden md:block">
+                                {profile?.full_name || session.user.email}
+                            </span>
                             <motion.button
                                 whileHover={{ scale: 1.05 }}
                                 onClick={handleLogout}

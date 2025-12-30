@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
@@ -38,13 +38,28 @@ if groq_api_key:
 class MoodRequest(BaseModel):
     mood: str
 
+async def verify_token(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    token = authorization.split(" ")[1]
+    try:
+        # Use the supabase client to verify the user
+        res = supabase.auth.get_user(token)
+        if not res or not res.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        return res.user
+    except Exception as e:
+        print(f"Auth Error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
 
 @app.get("/")
 def read_root():
     return {"message": "Vibe Movie Recommender API Running (Groq Powered)"}
 
 @app.post("/recommend")
-async def recommend_movies(request: MoodRequest):
+async def recommend_movies(request: MoodRequest, user: any = Depends(verify_token)):
     # Sanitize input
     mood_text = "".join(c for c in request.mood if ord(c) >= 32)[:300]
     print(f"\n--- REQUEST RECEIVED: {mood_text[:50]} ---")
