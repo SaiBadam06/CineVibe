@@ -9,6 +9,10 @@ import json
 import asyncio
 from watchmode_service import get_streaming_info
 
+import json
+import asyncio
+from watchmode_service import get_streaming_info
+
 load_dotenv()
 
 app = FastAPI()
@@ -38,18 +42,24 @@ if groq_api_key:
 class MoodRequest(BaseModel):
     mood: str
 
+
 @app.get("/")
 def read_root():
     return {"message": "Vibe Movie Recommender API Running (Groq Powered)"}
 
 @app.post("/recommend")
 async def recommend_movies(request: MoodRequest):
+    # Sanitize input
+    mood_text = "".join(c for c in request.mood if ord(c) >= 32)[:300]
+    print(f"\n--- REQUEST RECEIVED: {mood_text[:50]} ---")
+    
     if not supabase:
+        print("Supabase not configured, raising HTTPException.")
         raise HTTPException(status_code=500, detail="Supabase not configured")
 
-    mood_text = request.mood
     keywords = []
     target_genre = None
+    target_language = "Any" # Default to Any
 
     # 1. Use Groq AI to parse mood
     if groq_client:
@@ -77,7 +87,6 @@ async def recommend_movies(request: MoodRequest):
             data = json.loads(content)
             keywords = data.get("keywords", [])
             target_genre = data.get("target_genre", "General")
-            target_language = data.get("target_language", "Any")
             print(f"AI Analysis: {data}")
             
         except Exception as e:
@@ -129,6 +138,7 @@ async def recommend_movies(request: MoodRequest):
     try:
         response = supabase.table("movies").select("*").execute()
         all_movies = response.data
+        log_debug(f"Total movies fetched: {len(all_movies)}")
         
         scored_movies = []
         non_english_triggers = ["bollywood", "tollywood", "hindi", "telugu", "tamil", "kannada", "malayalam", "korean", "japanese", "spanish", "french"]
@@ -187,72 +197,58 @@ async def recommend_movies(request: MoodRequest):
 
             if score > 0:
                 scored_movies.append((score, movie))
-                # print(f"Scored {movie['title']}: {score} (Genre: {movie['genre']}, Tags: {movie['mood_tags']})") # Debug log
-
-            if score > 0:
-                scored_movies.append((score, movie))
         
         # Sort by score descending
         scored_movies.sort(key=lambda x: x[0], reverse=True)
         
-        # Dedup logic: Keep only the first occurrence of a title
+        # Dedup and Limit
         seen_titles = set()
-        unique_movies = []
+        top_movies = []
         for score, movie in scored_movies:
             if movie['title'] not in seen_titles:
-                unique_movies.append(movie)
+                top_movies.append(movie)
                 seen_titles.add(movie['title'])
-                
-        # Slice top 10 from unique list
-        top_movies = unique_movies[:10]
+            if len(top_movies) >= 10: break
         
-        # FINAL SAFETY NET: If we have ZERO movies (because of strict filtering), generate immediately
-        if not top_movies and target_language == "English" and not generated_new:
-             print("Detailed filtering removed all movies. Forcing generation for English...")
-             # Re-trigger generation logic (simplified)
+        # FINAL SAFETY NET
+        if not top_movies and not generated_new:
              try:
-                gen_prompt = f"Generate 5 high-quality, real {target_genre} movies in English that match these vibes: {', '.join(keywords)}. Fields: title, description, genre, mood_tags, poster_url, ott. Ensure description mentions 'Hollywood' or 'US'."
+                lang_instr = f"in {target_language} language" if target_language != "Any" else ""
+                gen_prompt = f"Return a JSON object with a 'movies' list containing 5 real {target_genre} movies {lang_instr} matching vibes: {', '.join(keywords)}. Each movie must have keys: title, description, genre, languages (list), mood_tags (list), poster_url, ott."
                 gen_completion = groq_client.chat.completions.create(
                      messages=[{"role": "user", "content": gen_prompt}],
-                     model="llama-3.3-70b-versatile",
+                     model="llama-3.1-8b-instant",
                      response_format={"type": "json_object"}
                 )
                 new_data = json.loads(gen_completion.choices[0].message.content).get("movies", [])
                 if new_data:
                     for m in new_data: 
                         m["genre"] = target_genre
-                        m["languages"] = ["English"] # Force tag
+                        if target_language != "Any":
+                             m["languages"] = [target_language]
                         if "ott" not in m: m["ott"] = "Netflix"
                     
                     supabase.table("movies").insert(new_data).execute()
-                    top_movies = new_data # Return these immediately
+                    top_movies = new_data
                     generated_new = True
-             except Exception as e:
-                 print(f"Emergency generation failed: {e}")
+             except Exception:
+                pass
 
-        # Deduplicate by title
-        final_movies = []
-        seen_titles = set()
-        for m in top_movies:
-            t = m.get('title', '').strip().lower()
-            if t not in seen_titles:
-                final_movies.append(m)
-                seen_titles.add(t)
-        
-        # --- WATCHMODE ENRICHMENT (Real Data) ---
-        # Try to get real OTT data for the top 5 results
+        # --- WATCHMODE ENRICHMENT ---
+        final_movies = top_movies[:6]
         async def enrich_movie(movie):
             real_ott = await get_streaming_info(movie['title'])
             if real_ott:
                 movie['ott'] = real_ott
         
-        await asyncio.gather(*[enrich_movie(m) for m in final_movies[:5]])
+        await asyncio.gather(*[enrich_movie(m) for m in final_movies])
 
         return {
             "movies": final_movies,
             "generated_new": generated_new,
             "target_genre": target_genre,
-            "target_language": target_language
+            "target_language": target_language,
+            "match_type": "exact" if top_movies else "none"
         }
 
     except Exception as e:
