@@ -9,10 +9,6 @@ import json
 import asyncio
 from watchmode_service import get_streaming_info
 
-import json
-import asyncio
-from watchmode_service import get_streaming_info
-
 load_dotenv()
 
 app = FastAPI()
@@ -87,6 +83,7 @@ async def recommend_movies(request: MoodRequest):
             data = json.loads(content)
             keywords = data.get("keywords", [])
             target_genre = data.get("target_genre", "General")
+            target_language = data.get("target_language", "Any")
             print(f"AI Analysis: {data}")
             
         except Exception as e:
@@ -138,7 +135,6 @@ async def recommend_movies(request: MoodRequest):
     try:
         response = supabase.table("movies").select("*").execute()
         all_movies = response.data
-        log_debug(f"Total movies fetched: {len(all_movies)}")
         
         scored_movies = []
         non_english_triggers = ["bollywood", "tollywood", "hindi", "telugu", "tamil", "kannada", "malayalam", "korean", "japanese", "spanish", "french"]
