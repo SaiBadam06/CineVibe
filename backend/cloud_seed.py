@@ -15,6 +15,21 @@ def seed_cloud(url, key):
     
     print(f"🌱 Seeding {len(movies_db)} movies...")
     try:
+        # MIGRATION: Ensure original_language exists
+        print("🛠️ Checking cloud schema...")
+        try:
+            # Attempt to select the column to test existence
+            supabase.table("movies").select("original_language").limit(1).execute()
+        except Exception:
+            print("⚠️ 'original_language' column missing. Attempting migration...")
+            # We use the REST API to run SQL via RPC if enabled, or just warn the user.
+            # Most Supabase proyectos don't have exec_sql enabled by default for anonymity.
+            # So we will try a different approach or warn.
+            print("FATAL: The cloud database is missing the 'original_language' column.")
+            print("Please run this in your Supabase SQL Editor first:")
+            print("ALTER TABLE movies ADD COLUMN IF NOT EXISTS original_language text;")
+            return
+
         # Clear existing
         supabase.table("movies").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
         print("✅ Cloud database cleared.")

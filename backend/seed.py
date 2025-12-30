@@ -68,10 +68,18 @@ try:
         for vibe in vibes:
             try:
                 print(f"Fetching: {vibe}...")
-                prompt = f"Generate a JSON list of 8 real {vibe} movies. Fields: title, genre, original_language (native release), languages (list of all release languages), mood_tags (list of 3 words), description, ott."
+                prompt = (
+                    "Return a JSON object with a 'movies' list containing 8 real "
+                    f"{vibe} movies. Each movie must have keys: title, description, genre, "
+                    "original_language (native), languages (list), mood_tags (list), poster_url, ott. "
+                    "Do not use null for lists."
+                )
                 completion = client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": "You are a movie meta-data expert. Use strictly valid JSON."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    model="llama-3.1-8b-instant",
                     response_format={"type": "json_object"}
                 )
                 content = completion.choices[0].message.content
@@ -133,18 +141,19 @@ except ImportError:
 except Exception as e:
     print(f"Skipping AI generation due to configuration: {e}")
 
-print(f"Total movies to process: {len(movies_db)}")
+if __name__ == "__main__":
+    print(f"Total movies to process: {len(movies_db)}")
 
-for movie in movies_db:
-    try:
-        # Check if exists
-        existing = supabase.table("movies").select("id").eq("title", movie["title"]).execute()
-        if not existing.data:
-            supabase.table("movies").insert(movie).execute()
-            print(f"Inserted: {movie['title']}")
-        else:
-            print(f"Skipped (Duplicate): {movie['title']}")
-    except Exception as e:
-        print(f"Error processing {movie.get('title')}: {e}")
+    for movie in movies_db:
+        try:
+            # Check if exists
+            existing = supabase.table("movies").select("id").eq("title", movie["title"]).execute()
+            if not existing.data:
+                supabase.table("movies").insert(movie).execute()
+                print(f"Inserted: {movie['title']}")
+            else:
+                print(f"Skipped (Duplicate): {movie['title']}")
+        except Exception as e:
+            print(f"Error processing {movie.get('title')}: {e}")
 
-print("Seeding complete!")
+    print("Seeding complete!")
