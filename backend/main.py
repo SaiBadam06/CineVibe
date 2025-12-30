@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from groq import Groq
 import json
+import asyncio
+from watchmode_service import get_streaming_info
 
 load_dotenv()
 
@@ -58,8 +60,9 @@ async def recommend_movies(request: MoodRequest):
             1. "target_genre": The single most dominant movie genre needed (e.g. Horror, Comedy, Sci-Fi, Romance). If ambiguous or mixed, use "General".
             2. "keywords": list of 3-5 specific adjective keywords.
             3. "search_term": A single best 1-2 word search phrase.
+            4. "target_language": The requested language (e.g. "English", "Hindi", "Telugu", "Korean", "Any"). Default to "Any" if not specified.
             
-            Example output: {{ "target_genre": "Horror", "keywords": ["scary", "dark"], "search_term": "horror" }}
+            Example output: {{ "target_genre": "Horror", "keywords": ["scary", "dark"], "search_term": "horror", "target_language": "English" }}
             """
             chat_completion = groq_client.chat.completions.create(
                 messages=[
@@ -74,12 +77,14 @@ async def recommend_movies(request: MoodRequest):
             data = json.loads(content)
             keywords = data.get("keywords", [])
             target_genre = data.get("target_genre", "General")
+            target_language = data.get("target_language", "Any")
             print(f"AI Analysis: {data}")
             
         except Exception as e:
             print(f"Groq AI Error: {e}")
             keywords = mood_text.split()
             target_genre = "General"
+            target_language = "Any"
 
     if not keywords: 
         keywords = mood_text.split()
@@ -92,11 +97,13 @@ async def recommend_movies(request: MoodRequest):
         # Note: 'genre' column is text, so we check ilike
         genre_check = supabase.table("movies").select("id").ilike("genre", f"%{target_genre}%").limit(1).execute()
         
+        # If we need to generate, include language in prompt
         if not genre_check.data:
             print(f"No movies found for genre '{target_genre}'. Generating on-demand...")
             try:
                 # Dynamic Generation Block
-                gen_prompt = f"Generate 5 high-quality, real {target_genre} movies. Fields: title, description, genre, mood_tags (list), poster_url (use placeholder https://placehold.co/600x900?text=Movie), ott (Netflix/Prime). JSON 'movies' list."
+                lang_instruction = f"in {target_language} language" if target_language != "Any" else ""
+                gen_prompt = f"Generate 5 high-quality, real {target_genre} movies {lang_instruction} that match these specific vibes/keywords: {', '.join(keywords)}. Fields: title, description, genre, languages (list of all languages the movie is released in), mood_tags (list), poster_url (use placeholder https://placehold.co/600x900?text=Movie), ott (Netflix/Prime). JSON 'movies' list."
                 
                 gen_completion = groq_client.chat.completions.create(
                      messages=[{"role": "user", "content": gen_prompt}],
@@ -124,6 +131,8 @@ async def recommend_movies(request: MoodRequest):
         all_movies = response.data
         
         scored_movies = []
+        non_english_triggers = ["bollywood", "tollywood", "hindi", "telugu", "tamil", "kannada", "malayalam", "korean", "japanese", "spanish", "french"]
+
         for movie in all_movies:
             score = 0
             movie_features = set()
@@ -131,39 +140,119 @@ async def recommend_movies(request: MoodRequest):
             if movie['mood_tags']: 
                 for t in movie['mood_tags']: movie_features.add(t.lower())
                 
-            full_text = (f"{movie['title']} {movie['description']} {movie['genre']}").lower()
+            full_text = (f"{movie['title']} {movie['description'] or ''} {movie['genre'] or ''}").lower()
 
             for k in keywords:
                 k_lower = k.lower()
                 if k_lower in movie_features:
-                    score += 3
+                    score += 5 # Increased from 3 to 5 to value "vibe" more
                 elif k_lower in full_text:
                     score += 1
             
-            # Boost score significantly if it matches the generated target genre
-            # This ensures "Funny" -> "Comedy" movies rank way higher than "Action" movies with "funny" tags
+            # Boost score if it matches the generated target genre
             if target_genre and target_genre.lower() != "general":
                  if target_genre.lower() in (movie['genre'] or '').lower():
-                     score += 10
-                 # Also check slight variations or if it's the primary genre
+                     score += 4 # Reduced from 10 to 4 to prevent genre from overpowering the vibe
                  elif (movie['genre'] or '').lower().startswith(target_genre.lower()):
-                     score += 10
+                     score += 4
+
+            # --- LANGUAGE LOGIC (STRICT) ---
+            movie_langs = movie.get('languages') or []
+            if isinstance(movie_langs, str): movie_langs = [movie_langs] # Fallback
+            movie_langs = [l.lower() for l in movie_langs]
+            
+            if target_language and target_language.lower() != "any":
+                req_lang = target_language.lower()
+                
+                # Case 1: English Requested
+                if req_lang == "english":
+                    # If it has English in its list of languages, it's good
+                    if "english" in movie_langs:
+                        score += 5
+                    # If it has NO English but has other languages, it's a mismatch
+                    elif len(movie_langs) > 0:
+                        score = -100
+                    # Safety loop for description triggers
+                    elif any(t in full_text for t in non_english_triggers):
+                        score = -100
+                
+                # Case 2: Specific Foreign Language Requested (e.g., Telugu)
+                elif req_lang in movie_langs:
+                    score += 10
+                
+                # Case 3: Foreign requested, but movie doesn't support it
+                elif req_lang in non_english_triggers:
+                    if len(movie_langs) > 0 and req_lang not in movie_langs:
+                        score = -100 # Strict separation
+
+            if score > 0:
+                scored_movies.append((score, movie))
+                # print(f"Scored {movie['title']}: {score} (Genre: {movie['genre']}, Tags: {movie['mood_tags']})") # Debug log
 
             if score > 0:
                 scored_movies.append((score, movie))
         
+        # Sort by score descending
         scored_movies.sort(key=lambda x: x[0], reverse=True)
-        top_movies = [m[1] for m in scored_movies[:10]]
         
-        match_type = "exact" if (scored_movies and scored_movies[0][0] >= 3) else "related"
-        if not top_movies: match_type = "none"
+        # Dedup logic: Keep only the first occurrence of a title
+        seen_titles = set()
+        unique_movies = []
+        for score, movie in scored_movies:
+            if movie['title'] not in seen_titles:
+                unique_movies.append(movie)
+                seen_titles.add(movie['title'])
+                
+        # Slice top 10 from unique list
+        top_movies = unique_movies[:10]
+        
+        # FINAL SAFETY NET: If we have ZERO movies (because of strict filtering), generate immediately
+        if not top_movies and target_language == "English" and not generated_new:
+             print("Detailed filtering removed all movies. Forcing generation for English...")
+             # Re-trigger generation logic (simplified)
+             try:
+                gen_prompt = f"Generate 5 high-quality, real {target_genre} movies in English that match these vibes: {', '.join(keywords)}. Fields: title, description, genre, mood_tags, poster_url, ott. Ensure description mentions 'Hollywood' or 'US'."
+                gen_completion = groq_client.chat.completions.create(
+                     messages=[{"role": "user", "content": gen_prompt}],
+                     model="llama-3.3-70b-versatile",
+                     response_format={"type": "json_object"}
+                )
+                new_data = json.loads(gen_completion.choices[0].message.content).get("movies", [])
+                if new_data:
+                    for m in new_data: 
+                        m["genre"] = target_genre
+                        m["languages"] = ["English"] # Force tag
+                        if "ott" not in m: m["ott"] = "Netflix"
+                    
+                    supabase.table("movies").insert(new_data).execute()
+                    top_movies = new_data # Return these immediately
+                    generated_new = True
+             except Exception as e:
+                 print(f"Emergency generation failed: {e}")
+
+        # Deduplicate by title
+        final_movies = []
+        seen_titles = set()
+        for m in top_movies:
+            t = m.get('title', '').strip().lower()
+            if t not in seen_titles:
+                final_movies.append(m)
+                seen_titles.add(t)
+        
+        # --- WATCHMODE ENRICHMENT (Real Data) ---
+        # Try to get real OTT data for the top 5 results
+        async def enrich_movie(movie):
+            real_ott = await get_streaming_info(movie['title'])
+            if real_ott:
+                movie['ott'] = real_ott
+        
+        await asyncio.gather(*[enrich_movie(m) for m in final_movies[:5]])
 
         return {
-            "movies": top_movies, 
-            "keywords_used": keywords,
-            "match_type": match_type,
+            "movies": final_movies,
             "generated_new": generated_new,
-            "target_genre": target_genre
+            "target_genre": target_genre,
+            "target_language": target_language
         }
 
     except Exception as e:

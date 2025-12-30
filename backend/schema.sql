@@ -4,6 +4,7 @@ create table if not exists movies (
   title text not null,
   description text,
   genre text,
+  languages text[], -- Array for multiple languages (e.g., ['English', 'Hindi'])
   mood_tags text[], -- Array of strings for vibes
   poster_url text,
   created_at timestamp with time zone default timezone('utc'::text, now())
