@@ -2,11 +2,31 @@ import React from 'react';
 import { motion } from 'framer-motion';
 
 const MovieCard = ({ title, description, mood_tags, tags, poster_url, imageUrl, ott }) => {
+    const [imageError, setImageError] = React.useState(false);
+
     // Handle inconsistent matching
     const displayTags = mood_tags || tags || [];
 
     // Use a fallback gradient if no valid image URL
-    const hasValidImage = poster_url && poster_url.startsWith('http') && !poster_url.includes('via.placeholder');
+    const hasValidImage = !imageError && poster_url && poster_url.startsWith('http') && !poster_url.includes('via.placeholder');
+
+    // Parse OTT if it's a JSON string
+    let displayOtt = ott;
+    try {
+        if (ott && typeof ott === 'string' && ott.trim().startsWith('{')) {
+            const parsed = JSON.parse(ott);
+            // Find first active platform
+            const platform = Object.keys(parsed).find(key => parsed[key] === true);
+            if (platform) {
+                // Format: "amazon_prime" -> "Amazon Prime"
+                displayOtt = platform.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+            } else {
+                displayOtt = null;
+            }
+        }
+    } catch (e) {
+        // If parse fails, just use original string
+    }
 
     return (
         <motion.div
@@ -20,18 +40,19 @@ const MovieCard = ({ title, description, mood_tags, tags, poster_url, imageUrl, 
                     <img
                         src={poster_url}
                         alt={title}
+                        onError={() => setImageError(true)}
                         className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
                     />
                 ) : (
-                    <div className="w-full h-full bg-gradient-to-br from-purple-900 to-indigo-900 flex items-center justify-center p-6 text-center">
+                    <div className="w-full h-full bg-gradient-to-br from-gray-900 to-slate-900 flex items-center justify-center p-6 text-center">
                         <h3 className="text-xl font-bold text-white opacity-50 group-hover:opacity-100 transition-opacity">{title}</h3>
                     </div>
                 )}
 
                 {/* OTT Badge */}
-                {ott && (
+                {displayOtt && (
                     <div className="absolute top-2 right-2 bg-black/70 backdrop-blur-sm text-xs font-bold text-white px-2 py-1 rounded-md border border-white/20 shadow-lg">
-                        {ott}
+                        {displayOtt}
                     </div>
                 )}
 
@@ -53,10 +74,8 @@ const MovieCard = ({ title, description, mood_tags, tags, poster_url, imageUrl, 
                     ))}
                 </div>
 
-                {/* Single Line Description / Tagline (Using Description truncated) */}
-                {!hasValidImage && (
-                    <p className="text-xs text-slate-400 line-clamp-2">{description}</p>
-                )}
+                {/* Single Line Description / Tagline (Removed as per request) */}
+
             </div>
         </motion.div>
     );

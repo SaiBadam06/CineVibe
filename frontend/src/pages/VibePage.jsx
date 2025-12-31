@@ -14,6 +14,7 @@ const VibePage = () => {
     const [matchType, setMatchType] = useState('');
     const [targetGenre, setTargetGenre] = useState('');
     const [profile, setProfile] = useState(null);
+    const [newlyGenerated, setNewlyGenerated] = useState(false);
 
     React.useEffect(() => {
         const fetchProfile = async () => {

@@ -58,6 +58,40 @@ async def verify_token(authorization: str = Header(None)):
 def read_root():
     return {"message": "Vibe Movie Recommender API Running (Groq Powered)"}
 
+@app.get("/database-info")
+async def database_info(user: any = Depends(verify_token)):
+    """Get information about available movies in the database"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    try:
+        response = supabase.table("movies").select("*").execute()
+        all_movies = response.data
+        
+        genres = {}
+        languages = set()
+        
+        for movie in all_movies:
+            # Count by genre
+            genre = movie.get('genre', 'Unknown')
+            genres[genre] = genres.get(genre, 0) + 1
+            
+            # Collect languages
+            movie_langs = movie.get('languages', [])
+            if isinstance(movie_langs, list):
+                for lang in movie_langs:
+                    languages.add(lang)
+        
+        return {
+            "total_movies": len(all_movies),
+            "genres": genres,
+            "languages": sorted(list(languages)),
+            "sample_movies": [m['title'] for m in all_movies[:10]]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/recommend")
 async def recommend_movies(request: MoodRequest, user: any = Depends(verify_token)):
     # Sanitize input
@@ -110,41 +144,8 @@ async def recommend_movies(request: MoodRequest, user: any = Depends(verify_toke
     if not keywords: 
         keywords = mood_text.split()
 
-    # 2. Check Database for Target Genre & Dynamic Seeding
+    # 2. Query Database (No AI Generation)
     generated_new = False
-    
-    if target_genre and target_genre != "General":
-        # Check if we have movies of this genre
-        # Note: 'genre' column is text, so we check ilike
-        genre_check = supabase.table("movies").select("id").ilike("genre", f"%{target_genre}%").limit(1).execute()
-        
-        # If we need to generate, include language in prompt
-        if not genre_check.data:
-            print(f"No movies found for genre '{target_genre}'. Generating on-demand...")
-            try:
-                # Dynamic Generation Block
-                lang_instruction = f"in {target_language} language" if target_language != "Any" else ""
-                gen_prompt = f"Generate 5 high-quality, real {target_genre} movies {lang_instruction} that match these specific vibes/keywords: {', '.join(keywords)}. Fields: title, description, genre, languages (list of all languages the movie is released in), mood_tags (list), poster_url (use placeholder https://placehold.co/600x900?text=Movie), ott (Netflix/Prime). JSON 'movies' list."
-                
-                gen_completion = groq_client.chat.completions.create(
-                     messages=[{"role": "user", "content": gen_prompt}],
-                     model="llama-3.3-70b-versatile",
-                     response_format={"type": "json_object"}
-                )
-                gen_content = gen_completion.choices[0].message.content
-                new_movies_data = json.loads(gen_content).get("movies", [])
-                
-                if new_movies_data:
-                    # Enforce genre
-                    for m in new_movies_data:
-                        m["genre"] = target_genre
-                        if "ott" not in m: m["ott"] = "Netflix" # fallback
-                    
-                    supabase.table("movies").insert(new_movies_data).execute()
-                    generated_new = True
-                    print(f"Seeded {len(new_movies_data)} new {target_genre} movies.")
-            except Exception as e:
-                print(f"Dynamic seeding failed: {e}")
 
     # 3. Query Supabase
     try:
@@ -162,20 +163,27 @@ async def recommend_movies(request: MoodRequest, user: any = Depends(verify_toke
                 for t in movie['mood_tags']: movie_features.add(t.lower())
                 
             full_text = (f"{movie['title']} {movie['description'] or ''} {movie['genre'] or ''}").lower()
+            title_lower = movie['title'].lower()
 
+            # Improved Scoring Logic
             for k in keywords:
                 k_lower = k.lower()
+                # Mood tag match (highest priority for vibe)
                 if k_lower in movie_features:
-                    score += 5 # Increased from 3 to 5 to value "vibe" more
+                    score += 7
+                # Title match (important for specific movie requests)
+                elif k_lower in title_lower:
+                    score += 5
+                # Description match (contextual relevance)
                 elif k_lower in full_text:
-                    score += 1
+                    score += 2
             
-            # Boost score if it matches the generated target genre
+            # Genre match (strong signal)
             if target_genre and target_genre.lower() != "general":
                  if target_genre.lower() in (movie['genre'] or '').lower():
-                     score += 4 # Reduced from 10 to 4 to prevent genre from overpowering the vibe
+                     score += 10
                  elif (movie['genre'] or '').lower().startswith(target_genre.lower()):
-                     score += 4
+                     score += 8
 
             # --- LANGUAGE LOGIC (STRICT) ---
             movie_langs = movie.get('languages') or []
@@ -226,29 +234,21 @@ async def recommend_movies(request: MoodRequest, user: any = Depends(verify_toke
                 seen_titles.add(movie['title'])
             if len(top_movies) >= 10: break
         
-        # FINAL SAFETY NET
-        if not top_movies and not generated_new:
-             try:
-                lang_instr = f"in {target_language} language" if target_language != "Any" else ""
-                gen_prompt = f"Return a JSON object with a 'movies' list containing 5 real {target_genre} movies {lang_instr} matching vibes: {', '.join(keywords)}. Each movie must have keys: title, description, genre, original_language (native), languages (list), mood_tags (list), poster_url, ott."
-                gen_completion = groq_client.chat.completions.create(
-                     messages=[{"role": "user", "content": gen_prompt}],
-                     model="llama-3.1-8b-instant",
-                     response_format={"type": "json_object"}
-                )
-                new_data = json.loads(gen_completion.choices[0].message.content).get("movies", [])
-                if new_data:
-                    for m in new_data: 
-                        m["genre"] = target_genre
-                        if target_language != "Any":
-                             m["languages"] = [target_language]
-                        if "ott" not in m: m["ott"] = "Netflix"
-                    
-                    supabase.table("movies").insert(new_data).execute()
-                    top_movies = new_data
-                    generated_new = True
-             except Exception:
-                pass
+        # Better Fallback - show available database content
+        available_genres = set()
+        available_languages = set()
+        for m in all_movies:
+            if m.get('genre'): available_genres.add(m['genre'])
+            if m.get('languages'):
+                for lang in m['languages']:
+                    available_languages.add(lang)
+        
+        # If no matches, return message with database info
+        if not top_movies:
+            print(f"No strong matches found. Available genres: {available_genres}")
+            # Return best-scored movies even if score is low
+            if scored_movies:
+                top_movies = [movie for _, movie in scored_movies[:6]]
 
         # --- WATCHMODE ENRICHMENT ---
         final_movies = top_movies[:6]
@@ -264,7 +264,10 @@ async def recommend_movies(request: MoodRequest, user: any = Depends(verify_toke
             "generated_new": generated_new,
             "target_genre": target_genre,
             "target_language": target_language,
-            "match_type": "exact" if top_movies else "none"
+            "match_type": "exact" if top_movies else "none",
+            "available_genres": list(available_genres),
+            "available_languages": list(available_languages),
+            "total_in_db": len(all_movies)
         }
 
     except Exception as e:
